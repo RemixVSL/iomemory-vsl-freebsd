@@ -1,0 +1,10 @@
+Fusion-io driver for FreeBSD AMD64
+
+
+The driver can be manually loaded with the following command:
+
+kldload iomemory-vsl
+
+The driver can be manually unloaded with the following command:
+
+kldunload iomemory-vsl

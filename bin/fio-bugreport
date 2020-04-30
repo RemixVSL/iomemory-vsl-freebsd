@@ -1,0 +1,607 @@
+#!/bin/sh
+#-----------------------------------------------------------------------------
+#  Copyright (c) 2006-2014 Fusion-io, Inc. (acquired by SanDisk Corp. 2014)
+#  Copyright (c) 2014 SanDisk Corp. and/or all its affiliates. All rights reserved.
+#
+#  No use, or distribution, of this source code is permitted in any form or
+#  means without a valid, written license agreement with SanDisk Corp. Please
+#  refer to the included "License" or "License.txt" file for terms and
+#  conditions regarding the use and redistribution of this software.
+#-----------------------------------------------------------------------------
+
+# Force bash, if present
+if [ -f /bin/bash ]; then
+  if [ -z "$BASH_VERSION" ]; then
+    /bin/bash $0
+    exit
+  fi
+fi
+
+set -u
+set -e
+# set -x
+
+BUGREPORT_VERSION=1
+# Copying hwaddress file under /sys/devices on 2.6 kernel hangs
+# Kernel panic while copying dell_rbu/data on dell machines
+SYS_DEVICES_EXCLUDE="hwaddress,dell_rbu"
+# Reading isdn under /proc/self/net hangs
+# Reading isdn under /proc/net/rpc/use-gss-proxy ( seen in 3.10.3 kernel)
+PROC_NET_EXCLUDE="isdn,use-gss-proxy"
+
+host_os=`uname -s`-`uname -r`
+echo $host_os
+
+# VMware ESX reports as Linux;  we'll make all ESX/ESXi's have a common host_os
+if [ -x "$(which vmware)" ]; then
+    vmware_version=$(vmware -v | sed -e 's/ /_/g')
+    case $vmware_version in
+        *ESX_4\.0\.*)
+            host_os="VMware-ESX-4.0.0"
+            ;;
+        *ESXi_4\.0\.*)
+            host_os="VMware-ESXi-4.0.0"
+            ;;
+        *ESX_4\.1\.*)
+            host_os="VMware-ESX-4.1.0"
+            ;;
+        *ESXi_4\.1\.*)
+            host_os="VMware-ESXi-4.1.0"
+            ;;
+        *ESXi_5\.0\.*)
+            host_os="VMware-ESXi-5.0.0"
+            ;;
+        *ESXi_5\.1\.*)
+            host_os="VMware-ESXi-5.1.0"
+            ;;
+        *ESXi_5\.5\.*)
+            host_os="VMware-ESXi-5.5.0"
+            ;;
+        *ESXi_6\.0\.*)
+            host_os="VMware-ESXi-6.0.0"
+            ;;
+        *ESX*)
+            host_os="VMware-ESXi-unknown"
+            ;;
+    esac
+fi
+
+# Since VMware only has a root account, we will just set the tmp directory.
+# For all other versions, we will check for root permissions and then set the tmp directory.
+case $host_os in
+    VMware-ESXi-*)
+        # ESXi's /tmp is a small ramdisk and may not be big enough.
+        # ESXi's own vm-support tool writes to /var/tmp, so good enough for us.
+        SYSTEM_TMPDIR=/var/tmp
+        ;;
+    *)
+        if [ `id | sed 's/uid=\([0-9]*\).*/\1/'` != "0" ] ; then
+           echo "Error:  $0 must be run as root, or via sudo"
+           exit 1
+        fi
+        SYSTEM_TMPDIR=/tmp
+        ;;
+esac
+
+# Allow unbound vars.  This allows the test -n ${RANDOM} to work on platforms
+# which don't support it.
+set +u
+TMPDIR_TEMPLATE=$SYSTEM_TMPDIR/fio-bugreport-$(date +%Y%m%d.%H%M%S)
+{ TMPDIR=$(mktemp -d "${TMPDIR_TEMPLATE}-XXXXXX" 2>/dev/null) && test -d ${TMPDIR}; } ||
+    { test -n ${RANDOM} && TMPDIR="${TMPDIR_TEMPLATE}-${RANDOM}" && mkdir ${TMPDIR} && test -d ${TMPDIR}; } ||
+    { TMPDIR="${TMPDIR_TEMPLATE}" && mkdir ${TMPDIR} && test -d ${TMPDIR}; } ||
+    exit 1
+set -u
+
+DIRNAME=$(echo $TMPDIR | sed -e 's@/*$@@;s@.*/@@')
+
+cd $TMPDIR
+
+# ESXi has no bzip; hence, we simply use gzip on all VMware hypervisors
+case $host_os in
+VMware-*)
+    TARFILE="$TMPDIR.tar.gz"
+    ;;
+HP-UX-*)
+    TARFILE="$TMPDIR.tar.Z"
+    COMPRESS="compress"
+    if [ -x /usr/contrib/bin/gzip ]; then
+        TARFILE="$TMPDIR.tar.gz"
+        COMPRESS="/usr/contrib/bin/gzip"
+    fi
+    ;;
+*)
+    TARFILE="$TMPDIR.tar.bz2"
+    ;;
+esac
+
+# NOTE: This should remain as the first line of successful output so that parsers can easily locate the output file.
+echo "Report output: $TARFILE"
+echo "OS: $host_os"
+
+if [ -e "$TARFILE" ]; then
+    echo "$TARFILE already exists, aborting!"
+    exit 1
+fi
+touch "$TARFILE"
+chmod 600 "$TARFILE"
+
+# Set path if appropriate
+case $host_os in
+HP-UX*)
+    export PATH=/opt/fusionio/bin:$PATH
+    ;;
+SunOS*)
+    export PATH=/opt/fusionio/bin:$PATH
+    ;;
+Darwin*)
+    export PATH=/opt/local/fusion-io/bin:$PATH
+    ;;
+FreeBSD*)
+    export PATH=/usr/local/fusionio/bin:$PATH
+    ;;
+esac
+
+# Remove Linux's alias of ls='ls --color=auto'
+unalias -a
+unset LS_COLORS
+LS="ls -1"
+CP="cp -pRP"
+
+cmd_data () {
+    local dir="$1" ; shift
+    local cmd="$1" ; shift
+    if [ "$#" = "0" ]
+        then
+            arg=""
+        else
+            arg="$@"
+    fi
+
+    local cmd_name=$(echo "$cmd $arg" | sed -e 's/\\/_/g;s/\*/_/g;s/ /_/g;s/\//_/g;s/_*$//')
+    echo -n "Collecting $cmd $arg..."
+
+    mkdir -p "$dir"
+    "$cmd" $arg > "$dir/$cmd_name" 2>&1 || true
+    echo "   done"
+}
+
+cmd_data_per_fct () {
+    for fct in $($LS /dev/fct*) ; do
+        # XXX doesn't handle options with spaces
+        newcmd=$(echo $@ | sed -e "s@XXFCTXX@$fct@g")
+        # The following can't be quoted
+        cmd_data $newcmd
+    done
+}
+
+cp_preserve_path () {
+    local source="$1" ; shift
+    local dest="$1" ; shift
+
+    if [ -d "$source" ]
+        then
+            [ ! -d "$dest/$source" ] && mkdir -p $dest/$source
+        else
+            local dest_path=$dest/`dirname $source`
+            [ ! -d "${dest_path}" ] && mkdir -p ${dest_path}
+            cp $source ${dest_path}
+    fi
+}
+
+file_data () {
+    local exclude_dirs=""
+    if [[ $1 == '--exclude='* ]]
+        then
+            exclude_dirs=`echo $1 | sed s/--exclude=//`
+            shift
+    fi
+    local dir="$1" ; shift
+    echo -n "Collecting $dir file(s)..."
+
+    if [ "$#" = "0" ]
+        then
+            arg=""
+        else
+            arg="$@"
+    fi
+
+    mkdir -p "$dir"
+    if [ "${exclude_dirs}" == "" ]
+        then
+            ( $CP $arg "$dir"/ 2>&1 || true ) |\
+             sed -e '/Permis/d;/Invalid/d;/No such/d;/Input.output error/d;/Operation not supported/d'
+        else
+            abs_dir=$PWD/$dir
+            find_cmd="find `basename $arg`"
+
+            for exclude_dir in `echo ${exclude_dirs} | tr ',' '\n'`
+                do
+                    find_cmd=${find_cmd}" -not -wholename \"*/${exclude_dir}*/*\" -not -name \"${exclude_dir}*\""
+            done
+
+            pushd `dirname $arg` > /dev/null
+            eval ${find_cmd} | while read i
+                do
+                     cp_preserve_path $i "${abs_dir}" 2>&1 |\
+                      sed -e '/Permis/d;/Invalid/d;/No such/d;/Input.output error/d;/Operation not supported/d'
+            done
+            popd > /dev/null
+    fi
+    echo "   done"
+}
+
+# echo -n "Generating debug dumps..."
+# echo t > /proc/sysrq-trigger
+# echo z > /proc/sysrq-trigger
+# echo " done"
+
+echo "$BUGREPORT_VERSION" > version
+
+#
+# Package listings
+#
+case $host_os in
+Linux*|VMware-ESX-*)
+    cmd_data packages dpkg -l
+    cmd_data packages rpm -qa
+    ;;
+
+SunOS*)
+    cmd_data packages pkg list
+    cmd_data packages pkginfo -x
+    ;;
+
+FreeBSD*)
+    cmd_data packages pkg_info
+    ;;
+
+HP-UX*)
+    cmd_data packages swlist
+    cmd_data packages kcmodule
+    cmd_data packages kctune
+    ;;
+
+VMware-*-4*)
+    cmd_data packages esxupdate query
+    cmd_data packages esxupdate query --vib-view
+    ;;
+
+VMware-ESXi-5*|VMware-ESXi-6*|VMware-ESXi-unknown)
+    cmd_data packages esxcli software vib list
+    ;;
+esac
+
+#
+# directCache status
+#
+case $host_os in
+Linux*)
+    cmd_data iodrives dc-status -v
+    cmd_data iodrives dc-status -b -fj -U
+    ;;
+esac
+
+#
+# iodrive diagnostic info
+#
+# Each of the fio-??? commands are broken up
+# into different case statement since some
+# may not be supported on all platforms.
+# Who doesn't have fio-status though?
+case $host_os in
+*)
+    cmd_data iodrives fio-status -a
+    cmd_data iodrives fio-status -fj -U
+    ;;
+esac
+
+case $host_os in
+*)
+    cmd_data iodrives fio-pci-check
+    cmd_data iodrives fio-pci-check -v
+    cmd_data iodrives fio-pci-check -f
+    cmd_data iodrives fio-pci-check -vvf
+    ;;
+esac
+
+case $host_os in
+*)
+    cmd_data_per_fct iodrives fio-read-lebmap XXFCTXX
+    cmd_data_per_fct iodrives fio-read-lebmap -m XXFCTXX
+    ;;
+esac
+
+case $host_os in
+*)
+    cmd_data_per_fct iodrives fio-get-erase-count XXFCTXX
+    cmd_data_per_fct iodrives fio-get-erase-count -b XXFCTXX
+esac
+
+# SunOS, HP-UX and OSX do not have /proc, so we'll get information out of fio-proctl
+case $host_os in
+*)
+    cmd_data iodrives fio-proctl -a
+    ;;
+esac
+
+# VMware ESX and ESXi kernel logs - depending on VMware version, logs differ
+#    ESX  4.0 - vmkernel - file likely in /var/log, messages picked up below
+#                          in shared Linux*/VMware-ESX-* section, vm-support
+#                          contains logs and rollover logs
+#    ESX  4.1 - vmkernel - file likely in /var/log, messages picked up below
+#                          in shared Linux*/VMware-ESX-* section, vm-support
+#                           contains logs and rollover logs
+#    ESXi 4.0 - messages - file in /var/log, but rollover in /scratch/log,
+#                          vm-support has both /var/log and /scratch/log
+#    ESXi 4.1 - messages - file in /var/log, but rollover in /scratch/log,
+#                          vm-support has both /var/log and /scratch/log
+#    ESXi 5.0 - vmkernel.log - /var/log file is likely a link, vm-support
+#                          has vmkernel.log, rollovers located in vm-support
+#                          file in var/run/log
+#    ESXi 5.1 - vmkernel.log - /var/log file is likely a link, vm-support
+#                          has vmkernel.log, rollovers located in vm-support
+#                          file in var/run/log
+
+# Fetch platform specific items
+case $host_os in
+VMware-*)
+    cmd_data system uname -a
+    cmd_data system vib-env
+    cmd_data system lspci
+    cmd_data system lspci -p
+    cmd_data system lspci -vd
+    cmd_data system vmkchkdev -L
+    cmd_data system df -k
+    cmd_data system vdf
+    cmd_data system cim-diagnostic.sh
+    cmd_data modules vmkload_mod -l
+    cmd_data modules esxcfg-module -l
+    cmd_data modules esxcfg-module iomemory-vsl -g
+    cmd_data modules esxcfg-scsidevs -l
+    cmd_data modules esxcfg-scsidevs -c
+    cmd_data modules esxcfg-scsidevs -u
+    cmd_data modules esxcfg-scsidevs -m
+    cmd_data modules esxcfg-scsidevs -a
+    cmd_data system esxcfg-info
+    cmd_data system vm-support
+    # Collect just the latest vm-support file
+    vmsupport_file=$(ls -t /var/tmp/esx-*.tgz | head -1)
+    if [ ! -z "$vmsupport_file" ]; then
+        file_data system $vmsupport_file
+    fi
+    ;;
+
+HP-UX*)
+    cmd_data system model
+    cmd_data system uname -a
+    cmd_data system hostname
+    cmd_data system ioscan -knf
+    cmd_data system ioscan -m dsf
+    cmd_data system ioscan -m lun
+    cmd_data system bdf -i
+    cmd_data system swapinfo
+    cmd_data system machinfo
+    cmd_data system lsdev
+
+    cmd_data logs dmesg
+    file_data logs /var/adm/syslog/syslog.*
+
+    cmd_data perf iostat 1 5 &
+    cmd_data perf vmstat 1 5 &
+    wait
+    cmd_data perf top -d 1
+    cmd_data perf ps -ef
+    ;;
+
+SunOS*)
+    cmd_data modules modinfo -w
+    file_data logs /var/adm/messages*
+    file_data logs /var/log/syslog*
+    file_data logs /var/log/fusionio/*
+    file_data system /etc/minor_perm
+    file_data system /etc/driver_aliases
+    file_data system /etc/path_to_inst
+    file_data system /etc/devlink.tab
+    file_data system /etc/name_to_major
+    file_data system /usr/kernel/drv/iomemory-vsl.conf
+    cmd_data system uname -a
+    cmd_data system hostname
+
+    cmd_data system prtconf -D
+    cmd_data system prtconf -v
+    cmd_data system prtconf -P
+    cmd_data system ls -alR /dev
+    cmd_data system ls -alR /devices
+    cmd_data system df -h
+
+    cmd_data zfs zpool list
+    cmd_data zfs zfs list
+
+    # Perf snapshot
+    cmd_data perf iostat -m 1 5 &
+    cmd_data perf vmstat 1 5 &
+    wait
+    cmd_data perf top -n 1
+    cmd_data perf ps aux
+    cmd_data perf ps -elfyLPZ
+    ;;
+
+FreeBSD*)
+    cmd_data system uname -a
+    cmd_data system hostname
+    cmd_data modules kldstat -v
+    file_data logs /var/log/messages*
+
+    cmd_data perf iostat 1 5 &
+    cmd_data perf vmstat 1 5 &
+    wait
+    cmd_data perf top -d 1
+    cmd_data perf ps -af
+    ;;
+
+Darwin*)
+    cmd_data system uname -a
+    cmd_data system hostname
+    cmd_data system ioreg -lxw200
+    cmd_data system system_profiler
+
+    cmd_data system kextstat
+
+    file_data logs /var/log/kernel.log
+    file_data logs /var/log/system.log
+    ;;
+
+Linux*)
+    # This proc needs to come first
+    file_data proc \
+        /proc/buddyinfo \
+        /proc/cgroups \
+        /proc/cmdline \
+        /proc/config* \
+        /proc/cpuinfo \
+        /proc/devices \
+        /proc/diskstats \
+        /proc/dma \
+        /proc/drbd \
+        /proc/filesystems \
+        /proc/interrupts \
+        /proc/iomem \
+        /proc/ioports \
+        /proc/kallsyms \
+        /proc/locks \
+        /proc/mdstat \
+        /proc/meminfo \
+        /proc/misc \
+        /proc/modules \
+        /proc/mounts \
+        /proc/mtrr \
+        /proc/pagetypeinfo \
+        /proc/partitions \
+        /proc/sched_debug \
+        /proc/schedstat \
+        /proc/slabinfo \
+        /proc/softirqs \
+        /proc/stat \
+        /proc/swaps \
+        /proc/timer_list \
+        /proc/timer_stats \
+        /proc/uptime \
+        /proc/version_signature \
+        /proc/vmallocinfo \
+        /proc/version \
+        /proc/vmstat \
+        /proc/zoneinfo
+
+    # Symlinks may point here, get them
+    file_data proc/self /proc/self/mounts
+    file_data --exclude=${PROC_NET_EXCLUDE} proc/self /proc/self/net
+    file_data proc /proc/fusion
+    file_data proc /proc/sys
+    file_data proc /proc/irq
+    file_data proc /proc/bus
+    file_data proc /proc/fs
+    file_data proc /proc/net
+    file_data proc /proc/scsi
+    file_data proc /proc/sysvipc
+
+    # Part of RAID data, but lives in proc
+    file_data raid /proc/drbd /etc/drbd.conf
+    ;;
+esac
+
+# Linux and VMware ESX have some common data
+case $host_os in
+Linux*|VMware-ESX-*)
+    cmd_data system lspci
+    cmd_data system lspci -vvvvv
+    cmd_data system lspci -tv
+    cmd_data system lspci -n
+    cmd_data system uname -a
+    cmd_data system hostname
+    file_data system /etc/issue
+    file_data logs /var/log/kern.log*
+    file_data logs /var/log/messages*
+    file_data logs /var/log/syslog*
+    file_data logs /var/log/warn*
+    file_data logs /var/log/fusionio/*
+    cmd_data logs dmesg
+    file_data perf /var/log/sa /var/log/sysstat
+    cmd_data perf sar -A
+    cmd_data perf sar -r
+    cmd_data perf sar
+    cmd_data modules lsmod
+
+    # Have to limit /sys as there are files that will cause cp to get stuck
+    file_data sys /sys/block
+    file_data sys /sys/bus
+    file_data sys /sys/module
+    file_data sys /sys/fs
+    file_data --exclude=${SYS_DEVICES_EXCLUDE} sys /sys/devices
+    cmd_data system dmidecode
+    cmd_data modules find /lib/modules
+    file_data system /etc/*release
+    file_data raid /etc/mdadm/mdadm.conf /etc/mdadm.conf
+    cmd_data raid pvs
+    cmd_data raid vgs
+    cmd_data raid lvs
+    file_data system /etc/fstab /etc/mtab
+    file_data init /etc/init.d/iomemory-vsl /etc/modprobe.d/iomemory-vsl.conf /etc/sysconfig/iomemory-vsl
+
+    # Perf snapshot
+    cmd_data perf iostat -m 1 5 &
+    cmd_data perf vmstat 1 5 &
+    wait
+    cmd_data perf top -n 1
+    cmd_data perf ps aux
+    cmd_data perf ps aux --sort start_time
+
+    # NUMA information
+    cmd_data numa numactl --hardware
+    cmd_data numa numactl --show
+    cmd_data numa numastat
+    ;;
+esac
+
+# Build the tar
+cd $SYSTEM_TMPDIR
+echo
+echo "Building tar file..."
+case $host_os in
+VMware-*|SunOS*|Darwin*|FreeBSD*)
+    find "$DIRNAME" -type f | xargs chmod -R u+rw;
+    ;;
+esac
+
+case $host_os in
+VMware-*)
+    tar czf "$TARFILE" "$DIRNAME"
+    ;;
+SunOS*)
+    tar cf - "$DIRNAME" | bzip2 > "$TARFILE"
+    ;;
+HP-UX-*)
+    tar cf - "$DIRNAME" | "$COMPRESS" > "$TARFILE"
+    ;;
+Darwin*)
+    tar cjf "$TARFILE" "$DIRNAME"
+    ;;
+FreeBSD*)
+    tar cjf "$TARFILE" "$DIRNAME"
+    ;;
+*)
+    tar cjf "$TARFILE" --mode=u+rw "$DIRNAME"
+    ;;
+esac
+
+# Clean up the temporary directory we made
+rm -rf "$DIRNAME"
+
+echo
+echo "Please attach the bugreport tar file"
+echo "    $TARFILE"
+echo "  to your support case, including steps to reproduce the problem."
+echo "  If you do not have an open support case for this issue, please open a support"
+echo "  case with a problem description and then attach this file to your new case."
+
+# vim: set softtabstop=4 shiftwidth=4 expandtab :

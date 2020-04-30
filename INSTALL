@@ -1,0 +1,56 @@
+Installation
+------------
+
+To install the driver, a install-fio.sh is included.  If you rather, there are also manual install steps below.
+
+Scripted Install
+----------------
+
+Run install-fio.sh and follow prompts.
+$ ./install-fio.sh
+
+Manual Install
+--------------
+
+1  Build the driver:
+   In the driver directory:
+   $ make
+   This will produce a iomemory-vsl.ko file
+
+2  Install the driver for autoload at boot
+   From the driver directory:
+   $ make install
+   which copies the iomemory-vsl.ko file to /boot/modules
+
+   Setup autoload and some options.  Add the following lines to
+   /boot/loader.conf
+
+   # set auto_attach to 0 to keep ioDrives from attaching the 
+   # block device at boot
+   # hw.fio.auto_attach="0"
+   iomemory-vsl_load="YES"
+
+3  Install utils from the bin directory
+   The install script puts these in /usr/local/fusionio/bin
+
+4  Update firmware if needed (see users guide) or load the driver
+   $ kldload /boot/modules/iomemory-vsl.ko
+
+
+Device Files
+------------
+
+The ioDrive control devices are /dev/fct[0-9]*
+The ioDrive block devices are /dev/fio[0-9]*
+
+Utilties
+--------
+
+fio-format      - Perform a low level format of the ioDrive
+fio-attach      - Attach the device creating the fio block device.
+fio-detach      - Detach the device 
+fio-status      - Report device status
+fio-update-iodrive    - Firmware update utility
+
+
+Please see the README also included in this directory.
