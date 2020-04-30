@@ -37,6 +37,11 @@ KFIO_LIB ?= kfio/${TARGET}_libkfio.o_shipped
 libkfio.o: ${KFIO_LIB}
 	ln -sf ${.CURDIR}/${KFIO_LIB} ${.TARGET}
 
+clean:
+	rm *.o
+	rm .*.o
+	rm *.ko
+
 OBJS += libkfio.o
 KMODDIR ?= /boot/modules
 
