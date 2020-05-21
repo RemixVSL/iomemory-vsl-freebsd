@@ -559,8 +559,7 @@ int _fusion_spin_trylock(fusion_spinlock_t *lock, const char *file, int line)
 {
     struct mtx *m = (struct mtx *)lock;
 
-    // return _mtx_trylock(m, 0, file, line) ? 1 : 0;
-   return mtx_trylock_flags_(m, 0, file, line) ? 1 : 0;
+    return mtx_trylock_flags_(m, 0, file, line) ? 1 : 0;
 }
 
 void _fusion_spin_unlock(fusion_spinlock_t *lock, const char *file, int line)
