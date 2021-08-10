@@ -10,10 +10,10 @@ Driver support for FusionIO cards has been lagging behind FreeBSD releases, effe
 The current version is derived from iomemory-vsl-3.2.10, with several fixes for compiling on FreeBSD 12.
 
 ## Releases
-There are no releases yet, just master and the original checkin branch.
+There are no releases yet, just `main` (formerly master) and the original checkin branch.
 
 ## Important note!!!
-Commits to master are not "always" write tested, just compile tested. Releases have gone through testing with Flexible I/O Tester. Testing for page_cache errors, and generic FIO checksumming on read and write and different block sizes. For now only the fio-3.2.10.1509 branch has been tested!!
+Commits to `main` are not "always" write tested, just compile tested. Releases have gone through testing with Flexible I/O Tester. Testing for page_cache errors, and generic FIO checksumming on read and write and different block sizes. For now only the fio-3.2.10.1509 branch has been tested!!
 
 ## Building
 ### Source
