@@ -53,3 +53,9 @@ none1@pci0:0:7:0:      class=0x018000 card=0x10101aed chip=0x10051aed rev=0x01 h
 ## Sysctl
 Unlike Linux, which uses `/proc/fctX` for statistics and card information, FreeBSD uses sysctl to provide statistics and configuration options. The relevant information can be found in `sysctl -a dev.fct`, `sysctl -a hw.fusion`.
 
+
+# How to Get Help
+- Open an issue in this Github repo
+- Join our Discord server at https://discord.gg/EAcujJkt
+
+
