@@ -56,6 +56,6 @@ Unlike Linux, which uses `/proc/fctX` for statistics and card information, FreeB
 
 # How to Get Help
 - Open an issue in this Github repo
-- Join our Discord server at https://discord.gg/EAcujJkt
+- Join our Discord server at https://discord.gg/VxDvVy3EdS
 
 
