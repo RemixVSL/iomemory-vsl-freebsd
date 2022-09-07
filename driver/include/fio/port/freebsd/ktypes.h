@@ -85,7 +85,10 @@ struct FUSION_STRUCT_ALIGN(8) __fusion_poll_struct {
 
 
 #define KERNEL_SECTOR_SIZE   512 /* ARGH */
-
+#if __FreeBSD_version >= 1301000
+typedef struct _device kfio_pci_dev_t;
+typedef struct _device kfio_pci_bus_t;
+#else
 typedef struct device kfio_pci_dev_t;
 typedef struct device kfio_pci_bus_t;
 
