@@ -90,7 +90,9 @@ void noinline fusion_schedule_work(fusion_dpc_t *work )
  * @param wq
  * @param sleep_time - delay time in micro seconds.
  */
+/*
 void fusion_schedule_delayed_work(fusion_delayed_dpc_t *wq, uint64_t sleep_time )
 {
     timeout((timeout_t *)fusion_schedule_work, (void *) wq, fusion_usectohz(sleep_time) );
 }
+*/

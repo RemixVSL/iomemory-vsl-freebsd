@@ -91,6 +91,7 @@ typedef struct _device kfio_pci_bus_t;
 #else
 typedef struct device kfio_pci_dev_t;
 typedef struct device kfio_pci_bus_t;
+#endif
 
 typedef int  kfio_irqreturn_t;
 

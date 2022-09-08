@@ -38,7 +38,7 @@
 struct _freebsd_timer_list
 {
     struct callout  cl;
-    timeout_t      *ftn;
+    void      *ftn;
     void           *data;
 };
 
@@ -170,7 +170,7 @@ void noinline fusion_set_timer_function(struct fusion_timer_list* timer,
     struct _freebsd_timer_list *ftimer;
 
     ftimer = (struct _freebsd_timer_list *)timer;
-    ftimer->ftn = (timeout_t *)f;
+    ftimer->ftn = (void *)f;
 }
 
 /**
